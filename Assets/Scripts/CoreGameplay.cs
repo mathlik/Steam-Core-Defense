@@ -123,7 +123,7 @@ public class CoreGameplay : MonoBehaviour
     {
         float temperature01 = currentTemperature / maxTemperature;
         float danger01 = Mathf.InverseLerp(55f, maxTemperature, currentTemperature);
-        bool alarm = currentTemperature > 75f;
+        bool alarm = currentTemperature > 65f;
 
         temperatureText.text = "REACTOR TEMPERATURE  " + Mathf.RoundToInt(currentTemperature) + " °C";
         temperatureBar.value = temperature01;
@@ -133,7 +133,7 @@ public class CoreGameplay : MonoBehaviour
         if (warningLight != null)
         {
             warningLight.intensity = alarm ? 2f + danger01 * 7f : 0f;
-            warningLight.enabled = alarm && (currentTemperature < 85f || Mathf.FloorToInt(Time.time * 5f) % 2 == 0);
+            warningLight.enabled = alarm && (currentTemperature < 75f || Mathf.FloorToInt(Time.time * 5f) % 2 == 0);
         }
 
         if (coreMaterial != null)
