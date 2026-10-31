@@ -19,6 +19,14 @@ public class PlayerController : MonoBehaviour
     private CharacterController characterController;
     private float verticalVelocity;
     private float cameraPitch;
+    private bool controlsLocked;
+
+    public void SetControlsLocked(bool locked)
+    {
+        controlsLocked = locked;
+        if (locked) UnlockCursor();
+        else LockCursor();
+    }
 
     private void Awake()
     {
@@ -34,6 +42,8 @@ public class PlayerController : MonoBehaviour
 
     private void Update()
     {
+        if (controlsLocked) return;
+
         LookAround();
         Move();
 

@@ -1,63 +1,60 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
-/// <summary>Показывает экран проигрыша после перегрева реактора.</summary>
+/// <summary>Управляет экраном завершения игры, созданным в сцене.</summary>
 public class GameOverUI : MonoBehaviour
 {
-    private CoreGameplay gameplay;
-    private GUIStyle titleStyle;
-    private GUIStyle buttonStyle;
-    private bool cursorShown;
+    [SerializeField] private GameObject root;
+    [SerializeField] private GameObject victoryRoot;
+    [SerializeField] private Text titleText;
+    [SerializeField] private Text victoryTitleText;
+    [SerializeField] private Button restartButton;
+    [SerializeField] private Button mainMenuButton;
+    [SerializeField] private Button victoryRestartButton;
+    [SerializeField] private Button victoryMainMenuButton;
+    [SerializeField] private string levelScene = "SteamCoreDefenseLevel";
+    [SerializeField] private string mainMenuScene = "MainMenu";
 
-    public void Initialize(CoreGameplay source)
+    private CoreGameplay gameplay;
+
+    private void Awake()
+    {
+        if (restartButton != null) restartButton.onClick.AddListener(RestartLevel);
+        if (mainMenuButton != null) mainMenuButton.onClick.AddListener(LoadMainMenu);
+        if (victoryRestartButton != null) victoryRestartButton.onClick.AddListener(RestartLevel);
+        if (victoryMainMenuButton != null) victoryMainMenuButton.onClick.AddListener(LoadMainMenu);
+        if (root != null) root.SetActive(false);
+        if (victoryRoot != null) victoryRoot.SetActive(false);
+    }
+
+    public void Show(CoreGameplay source)
     {
         gameplay = source;
+        bool isVictory = source.IsVictory();
+        if (titleText != null)
+        {
+            titleText.text = "REACTOR MELTDOWN";
+            titleText.color = Color.red;
+        }
+        if (victoryTitleText != null)
+        {
+            victoryTitleText.text = "REACTOR SECURED";
+            victoryTitleText.color = Color.green;
+        }
+        if (root != null) root.SetActive(!isVictory);
+        if (victoryRoot != null) victoryRoot.SetActive(isVictory);
     }
 
-    private void OnGUI()
+    private void RestartLevel()
     {
-        if (gameplay == null || !gameplay.IsGameOver()) return;
-
-        if (!cursorShown)
-        {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
-            cursorShown = true;
-        }
-
-        if (titleStyle == null) CreateStyles();
-
-        GUI.Box(new Rect(0f, 0f, Screen.width, Screen.height), GUIContent.none);
-        GUI.Label(new Rect(0f, Screen.height * 0.25f, Screen.width, 90f), "REACTOR MELTDOWN", titleStyle);
-
-        float width = Mathf.Min(420f, Screen.width * 0.4f);
-        float left = (Screen.width - width) * 0.5f;
-
-        if (GUI.Button(new Rect(left, Screen.height * 0.48f, width, 70f), "RESTART", buttonStyle))
-        {
-            SceneManager.LoadScene("SteamCoreDefenseLevel");
-        }
-
-        if (GUI.Button(new Rect(left, Screen.height * 0.6f, width, 70f), "MAIN MENU", buttonStyle))
-        {
-            SceneManager.LoadScene("MainMenu");
-        }
+        Time.timeScale = 1f;
+        SceneManager.LoadScene(levelScene);
     }
 
-    private void CreateStyles()
+    private void LoadMainMenu()
     {
-        titleStyle = new GUIStyle(GUI.skin.label)
-        {
-            alignment = TextAnchor.MiddleCenter,
-            fontSize = 64,
-            fontStyle = FontStyle.Bold
-        };
-        titleStyle.normal.textColor = Color.red;
-
-        buttonStyle = new GUIStyle(GUI.skin.button)
-        {
-            fontSize = 26,
-            fontStyle = FontStyle.Bold
-        };
+        Time.timeScale = 1f;
+        SceneManager.LoadScene(mainMenuScene);
     }
 }

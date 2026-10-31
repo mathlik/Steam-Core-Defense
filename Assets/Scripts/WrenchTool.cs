@@ -3,12 +3,32 @@ using UnityEngine;
 /// <summary>Отображает гаечный ключ и обрабатывает удар левой кнопкой мыши.</summary>
 public class WrenchTool : MonoBehaviour
 {
-    [SerializeField] private float damage = 30f;
-    [SerializeField] private float range = 2.5f;
-    [SerializeField] private float cooldown = 0.45f;
+    [Header("Combat")]
+    [SerializeField, Min(0f)] private float damage = 30f;
+    [SerializeField, Min(0f)] private float range = 2.5f;
+    [SerializeField, Min(0f)] private float cooldown = 0.45f;
+    [SerializeField, Min(0.01f)] private float swingDuration = 0.28f;
+    [SerializeField] private Camera aimCamera;
+    [SerializeField] private LayerMask hitLayers = ~0;
+    [SerializeField, Min(0.01f)] private float hitRadius = 0.18f;
+    [SerializeField, Min(0.01f)] private float sparkDuration = 0.12f;
 
-    private GameObject wrench;
-    private AudioSource audioSource;
+    [Header("Wrench Appearance")]
+    [Tooltip("Поворот ключа в состоянии покоя. Меняйте X/Y/Z прямо в Inspector.")]
+    [SerializeField] private Vector3 restingRotation = new Vector3(-110f, 180f, 0f);
+    [Tooltip("Цвет металлических частей ключа. Применяется к дочерним Renderer.")]
+    [SerializeField] private Color metalColor = new Color(0.7f, 0.74f, 0.8f, 1f);
+    [Tooltip("Цвет рукоятки ключа.")]
+    [SerializeField] private Color handleColor = new Color(0.08f, 0.09f, 0.11f, 1f);
+    [SerializeField] private bool applyColorsOnStart = true;
+
+    private float sparkVisibleUntil;
+
+    [Header("Scene Model")]
+    [Tooltip("Перетащите сюда корневой объект модели гаечного ключа из сцены или префаба.")]
+    [SerializeField] private Transform wrenchModel;
+
+    private Transform wrench => wrenchModel;
     private float nextSwingTime;
     private float swingTime;
     private bool isSwinging;
@@ -16,13 +36,30 @@ public class WrenchTool : MonoBehaviour
 
     private void Awake()
     {
-        audioSource = gameObject.AddComponent<AudioSource>();
-        audioSource.spatialBlend = 0f;
-        CreateWrenchModel();
+        if (applyColorsOnStart) ApplyWrenchMaterials();
+        if (wrenchModel != null) wrenchModel.localRotation = Quaternion.Euler(restingRotation);
+        if (wrenchModel == null)
+        {
+            Debug.LogWarning("WrenchTool: не назначена модель гаечного ключа в инспекторе.", this);
+        }
+    }
+
+    private void OnGUI()
+    {
+        if (Time.timeScale == 0f || Cursor.lockState != CursorLockMode.Locked) return;
+        float x = Screen.width * 0.5f;
+        float y = Screen.height * 0.5f;
+        Color oldColor = GUI.color;
+        GUI.color = Color.white;
+        GUI.DrawTexture(new Rect(x - 1f, y - 10f, 2f, 20f), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(x - 10f, y - 1f, 20f, 2f), Texture2D.whiteTexture);
+        GUI.color = oldColor;
     }
 
     private void Update()
     {
+        if (Cursor.lockState != CursorLockMode.Locked) return;
+
         if (!isSwinging && Input.GetMouseButtonDown(0) && Time.time >= nextSwingTime)
         {
             StartSwing();
@@ -40,15 +77,15 @@ public class WrenchTool : MonoBehaviour
         swingTime = 0f;
         isSwinging = true;
         hitRegistered = false;
-        audioSource.PlayOneShot(CreateTone("WrenchSwing", 180f, 0.25f));
     }
 
     private void AnimateSwing()
     {
         swingTime += Time.deltaTime;
-        float progress = Mathf.Clamp01(swingTime / 0.28f);
+        float progress = Mathf.Clamp01(swingTime / swingDuration);
         float rotation = -110f + Mathf.Sin(progress * Mathf.PI) * 80f;
-        wrench.transform.localRotation = Quaternion.Euler(rotation, 180f, 0f);
+        if (wrench == null) return;
+        wrench.localRotation = Quaternion.Euler(rotation, 180f, 0f);
 
         if (!hitRegistered && progress > 0.35f)
         {
@@ -59,18 +96,18 @@ public class WrenchTool : MonoBehaviour
         if (progress >= 1f)
         {
             isSwinging = false;
-            wrench.transform.localRotation = Quaternion.Euler(-110f, 180f, 0f);
+            if (wrench != null) wrench.localRotation = Quaternion.Euler(restingRotation);
         }
     }
 
     private void TryHitTarget()
     {
-        if (Camera.main == null)
+        if (aimCamera == null)
         {
             return;
         }
 
-        Ray ray = new Ray(Camera.main.transform.position, Camera.main.transform.forward);
+        Ray ray = new Ray(aimCamera.transform.position, aimCamera.transform.forward);
 
         if (!Physics.Raycast(ray, out RaycastHit hit, range))
         {
@@ -78,59 +115,54 @@ public class WrenchTool : MonoBehaviour
         }
 
         IDamageable target = hit.collider.GetComponentInParent<IDamageable>();
-        target?.TakeDamage(damage);
-        audioSource.PlayOneShot(CreateTone("WrenchHit", 65f, 0.8f));
-    }
-
-    private void CreateWrenchModel()
-    {
-
-        wrench = new GameObject("Wrench");
-        wrench.transform.SetParent(transform, false);
-        wrench.transform.localPosition = new Vector3(0.35f, -0.35f, 0.55f);
-        wrench.transform.localRotation = Quaternion.Euler(-110f, 180f, 0f);
-        wrench.transform.localScale = Vector3.one * 0.55f;
-
-        GameObject handle = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        handle.transform.SetParent(wrench.transform, false);
-        handle.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-        handle.transform.localScale = new Vector3(0.18f, 0.75f, 0.18f);
-
-        GameObject jaw = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        jaw.transform.SetParent(wrench.transform, false);
-        jaw.transform.localPosition = new Vector3(0f, 0f, 0.7f);
-        jaw.transform.localScale = new Vector3(0.3f, 0.18f, 0.3f);
-
-        Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-        handle.GetComponent<Renderer>().sharedMaterial = new Material(shader) { color = new Color(0.1f, 0.1f, 0.12f) };
-        jaw.GetComponent<Renderer>().sharedMaterial = new Material(shader) { color = new Color(0.75f, 0.78f, 0.82f) };
-
-        Destroy(handle.GetComponent<Collider>());
-        Destroy(jaw.GetComponent<Collider>());
-    }
-
-    private AudioClip CreateTone(string name, float frequency, float volume)
-    {
-        const int sampleRate = 44100;
-        int sampleCount = sampleRate / 8;
-        AudioClip clip = AudioClip.Create(name, sampleCount, 1, sampleRate, false);
-        float[] samples = new float[sampleCount];
-
-        for (int i = 0; i < samples.Length; i++)
+        if (target == null)
         {
-            float envelope = Mathf.Exp(-i / (float)(sampleCount / 5));
-            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * i / sampleRate) * volume * envelope;
+            Collider[] nearby = Physics.OverlapSphere(hit.point, hitRadius, hitLayers, QueryTriggerInteraction.Ignore);
+            foreach (Collider nearbyCollider in nearby)
+            {
+                target = nearbyCollider.GetComponentInParent<IDamageable>();
+                if (target != null) break;
+            }
         }
 
-        clip.SetData(samples, 0);
-        return clip;
+        if (target == null) return;
+        target.TakeDamage(damage);
+        sparkVisibleUntil = Time.time + sparkDuration;
+        CreateHitSparks(hit.point, hit.normal);
+    }
+
+    private void CreateHitSparks(Vector3 position, Vector3 normal)
+    {
+        GameObject sparks = new GameObject("SpiderHitSparks");
+        sparks.transform.position = position;
+        sparks.transform.rotation = Quaternion.LookRotation(normal);
+        ParticleSystem particles = sparks.AddComponent<ParticleSystem>();
+        var main = particles.main;
+        main.playOnAwake = false;
+        main.duration = 0.12f;
+        main.startLifetime = 0.12f;
+        main.startSpeed = 3.5f;
+        main.startSize = 0.045f;
+        main.startColor = new Color(1f, 0.65f, 0.08f);
+        main.maxParticles = 18;
+        var emission = particles.emission;
+        emission.rateOverTime = 0f;
+        emission.SetBursts(new[] { new ParticleSystem.Burst(0f, 12) });
+        var shape = particles.shape;
+        shape.shapeType = ParticleSystemShapeType.Cone;
+        shape.angle = 25f;
+        shape.radius = 0.02f;
+        var renderer = particles.GetComponent<ParticleSystemRenderer>();
+        renderer.material = new Material(Shader.Find("Universal Render Pipeline/Particles/Unlit") ?? Shader.Find("Standard"));
+        particles.Play();
+        Destroy(sparks, 0.4f);
     }
 
     private void ApplyWrenchMaterials()
     {
         Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-        Material handleMaterial = new Material(shader) { color = new Color(0.08f, 0.09f, 0.11f) };
-        Material metalMaterial = new Material(shader) { color = new Color(0.7f, 0.74f, 0.8f) };
+        Material handleMaterial = new Material(shader) { color = handleColor };
+        Material metalMaterial = new Material(shader) { color = metalColor };
 
         foreach (Renderer renderer in wrench.GetComponentsInChildren<Renderer>())
         {

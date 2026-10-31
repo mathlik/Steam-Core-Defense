@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -5,63 +6,174 @@ using UnityEngine.UI;
 public class CoreGameplay : MonoBehaviour
 {
     [Header("Temperature")]
-    [SerializeField] private float maxTemperature = 100f;
-    [SerializeField] private float currentTemperature = 25f;
-    [SerializeField] private float heatPerSecond = 3.5f;
-    [SerializeField] private float coolingPerSecond = 38f;
-    [SerializeField] private float valveCooldown = 7f;
-    [SerializeField] private float interactionDistance = 3.5f;
+    [Tooltip("Температура, при которой реактор перегревается и игра заканчивается.")]
+    [SerializeField, Min(1f)] private float maxTemperature = 100f;
+    [Tooltip("Температура в начале игры и температура, до которой охлаждается реактор.")]
+    [SerializeField] private float startingTemperature = 25f;
+    [SerializeField, Min(0f)] private float heatPerSecond = 3.5f;
+    [SerializeField, Min(0f)] private float coolingPerSecond = 38f;
 
-    private Text temperatureText;
-    private Text statusText;
-    private Text promptText;
-    private Slider temperatureBar;
-    private Image barFill;
-    private Light warningLight;
+    [Header("Temperature Thresholds")]
+    [Tooltip("Выше этой температуры появляется предупреждение в интерфейсе.")]
+    [SerializeField] private float warningTemperature = 75f;
+    [Tooltip("Выше этой температуры включается тревожная лампа и звук.")]
+    [SerializeField] private float alarmTemperature = 65f;
+    [Tooltip("Ниже этой температуры охлаждение завершается.")]
+    [SerializeField] private float coolingTargetTemperature = 25f;
+
+    [Header("Interaction")]
+    [SerializeField, Min(0.1f)] private float interactionDistance = 3.5f;
+    [SerializeField] private KeyCode interactionKey = KeyCode.E;
+    [SerializeField] private Camera interactionCamera;
+    [SerializeField, Min(0f)] private float alarmLightTemperatureFloor = 0f;
+    [SerializeField] private Color temperatureBarSafeColor = Color.cyan;
+    [SerializeField] private Color temperatureBarDangerColor = Color.red;
+    [Tooltip("Клапаны проверяются сверху вниз. Первый элемент массива считается клапаном 1.")]
+    [SerializeField] private Collider[] valves;
+    [Tooltip("Пауза после поломки вентиля. До истечения этого времени паук не сможет выбрать этот вентиль снова после его закрытия.")]
+    [SerializeField, Min(0f)] private float valveCooldownSeconds = 12f;
+    [SerializeField] private int startingValve = 1;
+    [SerializeField] private Collider cooler;
+
+    [Header("Scene References")]
+    [SerializeField] private Light warningLight;
+    [SerializeField] private Light coolerLight;
+    [SerializeField, Min(0f)] private float warningLightMinIntensity = 2f;
+    [SerializeField, Min(0f)] private float warningLightMaxIntensity = 9f;
+    [SerializeField, Min(0f)] private float warningLightBlinkRate = 5f;
+    [SerializeField] private Color coreGlowStart = Color.yellow;
+    [SerializeField] private Color coreGlowDanger = Color.red;
+    [SerializeField, Min(0f)] private float coreGlowIntensity = 1f;
+    [SerializeField, Min(0f)] private float coreGlowDangerBonus = 4f;
+    [SerializeField] private Renderer coreRenderer;
+    [SerializeField] private ParticleSystem[] steamEffects;
+    [SerializeField] private AtmosphereAudio audioController;
+
+    [Header("Spider Spawning")]
+    [SerializeField] private SteamSpider spiderPrefab;
+    [Tooltip("Точки, в которых могут появляться пауки. Для каждого нового паука выбирается случайная точка.")]
+    [SerializeField] private Transform[] spiderSpawnPoints;
+    [SerializeField, Min(1)] private int maxConcurrentSpiders = 3;
+    [SerializeField, Min(0.1f)] private float spiderSpawnInterval = 6f;
+    [SerializeField, Min(0.1f)] private float spiderSpawnDelayAfterDeath = 3f;
+    [SerializeField] private bool spawnSpiderOnStart = true;
+
+    [Header("Objective Panel")]
+    [SerializeField] private bool showValveObjectives = true;
+    [SerializeField] private Vector2 objectivePanelPosition = new Vector2(24f, -120f);
+    [SerializeField] private Vector2 objectivePanelSize = new Vector2(330f, 300f);
+    [SerializeField] private Color objectivePanelColor = new Color(0.02f, 0.04f, 0.07f, 0.85f);
+
+    [Header("Scene UI")]
+    [SerializeField] private Text temperatureText;
+    [SerializeField] private Text statusText;
+    [SerializeField] private Text promptText;
+    [SerializeField] private Text objectiveText;
+    [Tooltip("Отдельный текст HUD с обратным отсчётом доступности вентилей для паука.")]
+    [SerializeField] private Text valveCooldownText;
+    [SerializeField] private Slider temperatureBar;
+    [SerializeField] private Image barFill;
+    [SerializeField] private GameOverUI gameOverScreen;
+
+    private readonly HashSet<int> brokenValves = new HashSet<int>();
+    private readonly Dictionary<int, float> valveCooldownUntil = new Dictionary<int, float>();
+    private bool crisisOccurred;
     private Material coreMaterial;
-    private AtmosphereAudio audioController;
-    private ParticleSystem[] steamEffects;
+    private float currentTemperature;
 
-    private float nextValveTime;
+    private float nextSpiderSpawnTime;
     private int activeValve = 1;
-    private bool valveOpened;
+    private bool valveDamaged;
+    private bool valveClosedReadyForCooling;
     private bool cooling;
     private bool gameOver;
+    private bool victory;
+    private float survivalTime;
+    [SerializeField, Min(1f)] private float survivalTimeToWin = 120f;
 
     private void Awake()
     {
-        steamEffects = FindObjectsOfType<ParticleSystem>();
-        foreach (ParticleSystem steam in steamEffects)
+        if (interactionCamera == null) interactionCamera = Camera.main;
+        if (audioController == null) audioController = FindFirstObjectByType<AtmosphereAudio>();
+
+        startingTemperature = Mathf.Clamp(startingTemperature, 0f, maxTemperature);
+        coolingTargetTemperature = Mathf.Clamp(coolingTargetTemperature, 0f, maxTemperature);
+        warningTemperature = Mathf.Clamp(warningTemperature, 0f, maxTemperature);
+        alarmTemperature = Mathf.Clamp(alarmTemperature, 0f, maxTemperature);
+        currentTemperature = startingTemperature;
+
+        activeValve = valves != null && valves.Length > 0
+            ? Mathf.Clamp(startingValve, 1, valves.Length)
+            : 0;
+
+        crisisOccurred = false;
+
+        if (coreRenderer != null) coreMaterial = coreRenderer.material;
+        if (audioController != null) audioController.SetAlarm(false);
+
+        if (steamEffects != null)
         {
-            if (steam != null) steam.Stop();
+            foreach (ParticleSystem steam in steamEffects)
+            {
+                if (steam != null) steam.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+            }
         }
 
-        audioController = gameObject.AddComponent<AtmosphereAudio>();
-        warningLight = GameObject.Find("BoilerWarningLight")?.GetComponent<Light>();
+        if (warningLight != null) warningLight.enabled = false;
+        if (coolerLight != null) coolerLight.enabled = false;
 
-        GameObject core = GameObject.Find("BoilerCore");
-        if (core != null) coreMaterial = core.GetComponent<Renderer>().material;
-
-        CreateUserInterface();
+        nextSpiderSpawnTime = spawnSpiderOnStart ? Time.time : float.PositiveInfinity;
+        UpdateObjectivePanel();
     }
 
     private void Update()
     {
-        if (gameOver) return;
+        if (gameOver || victory) return;
 
-        currentTemperature += heatPerSecond * Time.deltaTime;
+        survivalTime += Time.deltaTime;
+        UpdateObjectivePanel();
+        if (survivalTime >= survivalTimeToWin)
+        {
+            if (CanWinGame())
+            {
+                WinGame();
+                return;
+            }
+
+            
+        }
+
+        if (spiderPrefab != null && Time.time >= nextSpiderSpawnTime && GetActiveSpiderCount() < Mathf.Max(1, maxConcurrentSpiders))
+        {
+            Transform spawnPoint = GetRandomSpiderSpawnPoint();
+            Vector3 spawnPosition = spawnPoint != null ? spawnPoint.position : transform.position;
+            Instantiate(spiderPrefab, spawnPosition, spawnPoint != null ? spawnPoint.rotation : Quaternion.identity);
+            nextSpiderSpawnTime = Time.time + spiderSpawnInterval;
+        }
+
+        if (brokenValves.Count > 0)
+        {
+            currentTemperature += heatPerSecond * Time.deltaTime;
+        }
         HandleInteraction();
 
         if (cooling)
         {
             currentTemperature -= coolingPerSecond * Time.deltaTime;
-            if (currentTemperature <= 25f)
+            if (currentTemperature <= coolingTargetTemperature)
             {
-                currentTemperature = 25f;
+                currentTemperature = coolingTargetTemperature;
                 cooling = false;
-                valveOpened = false;
-                activeValve = activeValve % 3 + 1;
-                audioController.SetCooling(false);
+                if (valves != null && valves.Length > 0)
+                {
+                    activeValve = activeValve % valves.Length + 1;
+                }
+                else
+                {
+                    activeValve = 0;
+                }
+
+                if (audioController != null) audioController.SetCooling(false);
             }
         }
 
@@ -70,96 +182,201 @@ public class CoreGameplay : MonoBehaviour
         if (currentTemperature >= maxTemperature) LoseGame();
     }
 
-    private void HandleInteraction()
+    public void ScheduleSpiderSpawnAfterDeath()
     {
-        if (!Input.GetKeyDown(KeyCode.E) || Camera.main == null) return;
-
-        Ray ray = new Ray(Camera.main.transform.position, Camera.main.transform.forward);
-        if (!Physics.Raycast(ray, out RaycastHit hit, interactionDistance)) return;
-
-        string name = hit.collider.gameObject.name;
-        if (name.Contains("Valve_0")) UseValve(name);
-        else if (name.Contains("Cooler")) UseCooler();
+        nextSpiderSpawnTime = Mathf.Min(nextSpiderSpawnTime, Time.time + spiderSpawnDelayAfterDeath);
     }
 
-    private void UseValve(string objectName)
+    private int GetActiveSpiderCount()
     {
-        int valveNumber = objectName.Contains("Valve_01") ? 1 :
-            objectName.Contains("Valve_02") ? 2 : 3;
+        return FindObjectsByType<SteamSpider>(FindObjectsSortMode.None).Length;
+    }
 
-        if (valveNumber != activeValve)
+    private Transform GetRandomSpiderSpawnPoint()
+    {
+        if (spiderSpawnPoints == null || spiderSpawnPoints.Length == 0) return null;
+        List<Transform> validPoints = new List<Transform>();
+        foreach (Transform point in spiderSpawnPoints)
         {
-            SetStatus("WRONG VALVE - ACTIVE: " + activeValve, Color.red);
+            if (point != null) validPoints.Add(point);
+        }
+        return validPoints.Count == 0 ? null : validPoints[Random.Range(0, validPoints.Count)];
+    }
+
+    private void HandleInteraction()
+    {
+        if (!Input.GetKeyDown(interactionKey) || interactionCamera == null) return;
+
+        Ray ray = new Ray(interactionCamera.transform.position, interactionCamera.transform.forward);
+        if (!Physics.Raycast(ray, out RaycastHit hit, interactionDistance)) return;
+
+        int valveNumber = GetValveNumber(hit.collider);
+        if (valveNumber > 0)
+        {
+            UseValve(valveNumber);
+        }
+        else if (IsCooler(hit.collider))
+        {
+            UseCooler();
+        }
+    }
+
+    private void UseValve(int valveNumber)
+    {
+        if (brokenValves.Contains(valveNumber))
+        {
+            brokenValves.Remove(valveNumber);
+            valveDamaged = brokenValves.Count > 0;
+            if (valveDamaged)
+            {
+                foreach (int remainingValve in brokenValves)
+                {
+                    activeValve = remainingValve;
+                    break;
+                }
+            }
+            UpdateObjectivePanel();
+
+            if (brokenValves.Count == 0)
+            {
+                valveClosedReadyForCooling = true;
+                SetSteam(false);
+                SetStatus("ALL VALVES CLOSED - USE COOLER", Color.cyan);
+            }
+            else
+            {
+                SetStatus("VALVE " + valveNumber + " CLOSED - CLOSE REMAINING", Color.yellow);
+            }
             return;
         }
 
-        if (Time.time < nextValveTime)
+        SetStatus("ONLY BROKEN VALVES CAN BE CLOSED", Color.yellow);
+    }
+
+    private int GetValveNumber(Collider hitCollider)
+    {
+        if (valves == null) return 0;
+
+        for (int i = 0; i < valves.Length; i++)
         {
-            SetStatus("VALVE COOLDOWN: " + Mathf.CeilToInt(nextValveTime - Time.time) + "s", Color.yellow);
-            return;
+            Collider configuredValve = valves[i];
+            if (configuredValve == null) continue;
+            if (hitCollider == configuredValve || hitCollider.transform.IsChildOf(configuredValve.transform))
+            {
+                return i + 1;
+            }
         }
 
-        valveOpened = true;
-        nextValveTime = Time.time + valveCooldown;
-        SetSteam(true);
-        SetStatus("PRESSURE RELEASED - GO TO COOLER", Color.cyan);
+        return 0;
+    }
+
+    private bool IsCooler(Collider hitCollider)
+    {
+        return cooler != null && (hitCollider == cooler || hitCollider.transform.IsChildOf(cooler.transform));
     }
 
     private void UseCooler()
     {
-        if (!valveOpened)
+        if (brokenValves.Count > 0)
         {
-            SetStatus("OPEN ACTIVE VALVE FIRST", Color.yellow);
+            SetStatus("CLOSE ALL BROKEN VALVES FIRST", Color.yellow);
             return;
         }
 
+        valveClosedReadyForCooling = false;
         cooling = true;
-        audioController.SetCooling(true);
+        if (audioController != null) audioController.SetCooling(true);
         SetSteam(false);
         SetStatus("COOLING SYSTEM ACTIVE", Color.cyan);
     }
 
     private void UpdateFeedback()
     {
-        float temperature01 = currentTemperature / maxTemperature;
-        float danger01 = Mathf.InverseLerp(55f, maxTemperature, currentTemperature);
-        bool alarm = currentTemperature > 65f;
+        float temperature01 = Mathf.Clamp01(currentTemperature / maxTemperature);
+        float danger01 = Mathf.InverseLerp(alarmTemperature, maxTemperature, currentTemperature);
+        bool alarm = currentTemperature > alarmTemperature;
+        bool warning = currentTemperature > warningTemperature;
 
-        temperatureText.text = "REACTOR TEMPERATURE  " + Mathf.RoundToInt(currentTemperature) + " °C";
-        temperatureBar.value = temperature01;
-        barFill.color = Color.Lerp(Color.cyan, Color.red, temperature01);
-        audioController.SetAlarm(alarm);
+        if (temperatureText != null) temperatureText.text = "REACTOR TEMPERATURE  " + Mathf.RoundToInt(currentTemperature) + " °C";
+        if (temperatureBar != null) temperatureBar.value = temperature01;
+        if (barFill != null) barFill.color = Color.Lerp(temperatureBarSafeColor, temperatureBarDangerColor, temperature01);
+        if (audioController != null) audioController.SetAlarm(alarm);
 
         if (warningLight != null)
         {
-            warningLight.intensity = alarm ? 2f + danger01 * 7f : 0f;
-            warningLight.enabled = alarm && (currentTemperature < 75f || Mathf.FloorToInt(Time.time * 5f) % 2 == 0);
+            warningLight.intensity = alarm ? Mathf.Lerp(warningLightMinIntensity, warningLightMaxIntensity, danger01) : 0f;
+            bool blinkOn = warningLightBlinkRate <= 0f || Mathf.FloorToInt(Time.time * warningLightBlinkRate) % 2 == 0;
+            warningLight.enabled = alarm && currentTemperature >= alarmLightTemperatureFloor && (currentTemperature < warningTemperature || blinkOn);
         }
 
         if (coreMaterial != null)
         {
-            Color glow = Color.Lerp(Color.yellow, Color.red, danger01);
-            coreMaterial.SetColor("_EmissionColor", glow * (1f + danger01 * 4f));
+            Color glow = Color.Lerp(coreGlowStart, coreGlowDanger, danger01);
+            Color litGlow = glow * (coreGlowIntensity + danger01 * coreGlowDangerBonus);
+            if (coreMaterial.HasProperty("_BaseColor")) coreMaterial.SetColor("_BaseColor", glow);
+            if (coreMaterial.HasProperty("_Color")) coreMaterial.SetColor("_Color", glow);
+            if (coreMaterial.HasProperty("_EmissionColor"))
+            {
+                coreMaterial.EnableKeyword("_EMISSION");
+                coreMaterial.SetColor("_EmissionColor", litGlow);
+            }
         }
 
-        promptText.text = valveOpened ? "E  USE COOLER" : "E  OPEN ACTIVE VALVE " + activeValve;
+        if (promptText != null) promptText.text = "E  INTERACT";
 
-        if (!valveOpened && currentTemperature > 75f) SetStatus("WARNING: ACTIVE VALVE " + activeValve, Color.yellow);
-        else if (!valveOpened) SetStatus("SYSTEM STABLE", Color.green);
+        if (coolerLight != null) coolerLight.enabled = cooling;
+
+        if (valveDamaged) SetStatus("VALVE DAMAGED - CLOSE IT", Color.red);
+        else if (valveClosedReadyForCooling) SetStatus("VALVE CLOSED - USE COOLER", Color.cyan);
+        else if (currentTemperature > warningTemperature) SetStatus("WARNING: ACTIVE VALVE " + activeValve, Color.yellow);
+        else SetStatus("SYSTEM STABLE", Color.green);
+    }
+
+    public bool IsVictory() => victory;
+
+    private void WinGame()
+    {
+        victory = true;
+        Time.timeScale = 0f;
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+        if (player != null) player.SetControlsLocked(true);
+        WrenchTool wrench = FindFirstObjectByType<WrenchTool>();
+        if (wrench != null) wrench.enabled = false;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+        SetStatus("REACTOR SECURED", Color.green);
+        if (gameOverScreen != null) gameOverScreen.Show(this);
+    }
+
+    private bool CanWinGame()
+    {
+        if (!crisisOccurred) return false;
+        if (valves == null || valves.Length == 0) return false;
+        if (brokenValves.Count > 0) return false;
+        if (cooling) return false;
+        if (currentTemperature > coolingTargetTemperature + 1f) return false;
+        return true;
     }
 
     private void LoseGame()
     {
         gameOver = true;
         SetSteam(true);
+        PlayerController player = FindFirstObjectByType<PlayerController>();
+        if (player != null) player.SetControlsLocked(true);
+        WrenchTool wrench = FindFirstObjectByType<WrenchTool>();
+        if (wrench != null) wrench.enabled = false;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         SetStatus("REACTOR MELTDOWN", Color.red);
-        promptText.text = "SYSTEM FAILURE";
-        GameOverUI screen = gameObject.AddComponent<GameOverUI>();
-        screen.Initialize(this);
+        if (promptText != null) promptText.text = "SYSTEM FAILURE";
+        if (gameOverScreen != null) gameOverScreen.Show(this);
     }
 
     private void SetSteam(bool enabled)
     {
+        if (steamEffects == null) return;
+
         foreach (ParticleSystem steam in steamEffects)
         {
             if (steam == null) continue;
@@ -167,115 +384,7 @@ public class CoreGameplay : MonoBehaviour
             else steam.Stop();
         }
 
-        audioController.SetSteam(enabled);
-    }
-
-    private void CreateUserInterface()
-    {
-        GameObject canvasObject = new GameObject("Gameplay UI");
-        Canvas canvas = canvasObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-
-        CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920f, 1080f);
-        canvasObject.AddComponent<GraphicRaycaster>();
-
-        GameObject panel = new GameObject("TopPanel");
-        panel.transform.SetParent(canvasObject.transform, false);
-        Image panelImage = panel.AddComponent<Image>();
-        panelImage.color = new Color(0.02f, 0.04f, 0.07f, 0.92f);
-        SetRect(panel.GetComponent<RectTransform>(), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), Vector2.zero, new Vector2(900f, 170f));
-
-        temperatureText = CreateText("Temperature", canvasObject.transform, "REACTOR TEMPERATURE", 32, Color.white);
-        SetRect(temperatureText.rectTransform, new Vector2(0.5f, 0.93f), new Vector2(0.5f, 0.93f), Vector2.zero, new Vector2(800f, 45f));
-
-        statusText = CreateText("Status", canvasObject.transform, "SYSTEM STABLE", 27, Color.green);
-        SetRect(statusText.rectTransform, new Vector2(0.5f, 0.85f), new Vector2(0.5f, 0.85f), Vector2.zero, new Vector2(800f, 40f));
-
-        promptText = CreateText("Prompt", canvasObject.transform, "E OPEN ACTIVE VALVE", 22, Color.white);
-        SetRect(promptText.rectTransform, new Vector2(0.5f, 0.06f), new Vector2(0.5f, 0.06f), Vector2.zero, new Vector2(900f, 42f));
-
-        GameObject barObject = new GameObject("TemperatureBar");
-        barObject.transform.SetParent(canvasObject.transform, false);
-        temperatureBar = barObject.AddComponent<Slider>();
-        temperatureBar.minValue = 0f;
-        temperatureBar.maxValue = 1f;
-        SetRect(barObject.GetComponent<RectTransform>(), new Vector2(0.5f, 0.77f), new Vector2(0.5f, 0.77f), Vector2.zero, new Vector2(650f, 28f));
-
-        GameObject background = new GameObject("Background");
-        background.transform.SetParent(barObject.transform, false);
-        Image backgroundImage = background.AddComponent<Image>();
-        backgroundImage.color = new Color(0.1f, 0.12f, 0.15f);
-        SetRect(background.GetComponent<RectTransform>(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
-
-        GameObject fill = new GameObject("Fill");
-        fill.transform.SetParent(barObject.transform, false);
-        barFill = fill.AddComponent<Image>();
-        barFill.color = Color.cyan;
-        SetRect(fill.GetComponent<RectTransform>(), Vector2.zero, new Vector2(0.25f, 1f), Vector2.zero, Vector2.zero);
-        temperatureBar.fillRect = fill.GetComponent<RectTransform>();
-    }
-
-    private Text CreateText(string objectName, Transform parent, string value, int size, Color color)
-    {
-        GameObject textObject = new GameObject(objectName);
-        textObject.transform.SetParent(parent, false);
-
-        Text text = textObject.AddComponent<Text>();
-        text.text = value;
-        text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-        text.fontSize = size;
-        text.color = color;
-        text.alignment = TextAnchor.MiddleCenter;
-        return text;
-    }
-
-    private void SetRect(RectTransform rect, Vector2 anchorMin, Vector2 anchorMax, Vector2 position, Vector2 size)
-    {
-        rect.anchorMin = anchorMin;
-        rect.anchorMax = anchorMax;
-        rect.anchoredPosition = position;
-        rect.sizeDelta = size;
-    }
-
-    private void OnGUI()
-    {
-        if (!gameOver) return;
-
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
-
-        GUI.Box(new Rect(0f, 0f, Screen.width, Screen.height), GUIContent.none);
-
-        GUIStyle title = new GUIStyle(GUI.skin.label)
-        {
-            alignment = TextAnchor.MiddleCenter,
-            fontSize = 64,
-            fontStyle = FontStyle.Bold
-        };
-        title.normal.textColor = Color.red;
-
-        GUI.Label(new Rect(0f, Screen.height * 0.25f, Screen.width, 90f), "REACTOR MELTDOWN", title);
-
-        GUIStyle button = new GUIStyle(GUI.skin.button)
-        {
-            fontSize = 26,
-            fontStyle = FontStyle.Bold
-        };
-
-        float width = Mathf.Min(420f, Screen.width * 0.4f);
-        float left = (Screen.width - width) * 0.5f;
-
-        if (GUI.Button(new Rect(left, Screen.height * 0.48f, width, 70f), "RESTART", button))
-        {
-            UnityEngine.SceneManagement.SceneManager.LoadScene("SteamCoreDefenseLevel");
-        }
-
-        if (GUI.Button(new Rect(left, Screen.height * 0.6f, width, 70f), "MAIN MENU", button))
-        {
-            UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
-        }
+        if (audioController != null) audioController.SetSteam(enabled);
     }
 
     private void SetStatus(string message, Color color)
@@ -286,5 +395,128 @@ public class CoreGameplay : MonoBehaviour
     }
 
     public bool IsGameOver() => gameOver;
+
+    public Transform GetSpiderTarget()
+    {
+        if (valves == null || valves.Length == 0) return null;
+
+        List<int> available = new List<int>();
+        for (int i = 0; i < valves.Length; i++)
+        {
+            int valveNumber = i + 1;
+            if (valves[i] != null && !brokenValves.Contains(valveNumber) && IsValveAvailableToSpider(valveNumber))
+                available.Add(i);
+        }
+
+        if (available.Count == 0) return null;
+        int selectedIndex = available[Random.Range(0, available.Count)];
+        return valves[selectedIndex].transform;
+    }
+
+    public bool IsSpiderTargetAvailable(Transform target)
+    {
+        if (target == null || valves == null) return false;
+
+        for (int i = 0; i < valves.Length; i++)
+        {
+            int valveNumber = i + 1;
+            if (valves[i] != null && valves[i].transform == target &&
+                !brokenValves.Contains(valveNumber) && IsValveAvailableToSpider(valveNumber))
+                return true;
+        }
+
+        return false;
+    }
+
+    public bool BreakValveFromSpider(Transform spider, Transform target, float breakDistance)
+    {
+        if (spider == null || target == null || valves == null || valves.Length == 0) return false;
+        breakDistance = Mathf.Max(0.1f, breakDistance);
+
+        for (int index = 0; index < valves.Length; index++)
+        {
+            Collider valve = valves[index];
+            int valveNumber = index + 1;
+            if (valve == null || valve.transform != target || brokenValves.Contains(valveNumber) ||
+                !IsValveAvailableToSpider(valveNumber)) continue;
+
+            Vector3 closestPoint = valve.ClosestPoint(spider.position);
+            if ((closestPoint - spider.position).sqrMagnitude > breakDistance * breakDistance) return false;
+
+            BreakValve(index);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsValveAvailableToSpider(int valveNumber)
+    {
+        return !valveCooldownUntil.TryGetValue(valveNumber, out float cooldownEnd) || Time.time >= cooldownEnd;
+    }
+
+    public float GetValveCooldownRemaining(int valveNumber)
+    {
+        if (!valveCooldownUntil.TryGetValue(valveNumber, out float cooldownEnd)) return 0f;
+        return Mathf.Max(0f, cooldownEnd - Time.time);
+    }
+
+    private void BreakValve(int valveIndex)
+    {
+        valveCooldownUntil[valveIndex + 1] = Time.time + valveCooldownSeconds;
+        brokenValves.Add(valveIndex + 1);
+        activeValve = valveIndex + 1;
+        valveDamaged = true;
+        crisisOccurred = true;
+        SetSteam(true);
+        SetStatus($"VALVE {GetValveName(valveIndex)} BROKEN - CLOSE IT AND USE COOLER", Color.red);
+        UpdateObjectivePanel();
+    }
+
+    private string GetValveName(int index)
+    {
+        if (index == 0) return "1";
+        if (index == 1) return "2";
+        if (index == 2) return "3";
+        return (index + 1).ToString();
+    }
+
+    private void UpdateObjectivePanel()
+    {
+        if (!showValveObjectives || objectiveText == null) return;
+        string text = "TASKS\n";
+        if (brokenValves.Count == 0)
+        {
+            text += valveClosedReadyForCooling ? "Use the cooler" : "No broken valves";
+        }
+        else
+        {
+            text += "Broken valves - close:\n";
+            foreach (int v in brokenValves)
+            {
+                text += $"[ ] Valve {v}\n";
+            }
+        }
+        
+
+        objectiveText.text = text;
+
+        if (valveCooldownText != null)
+        {
+            string cooldownText = "VALVE SPIDER COOLDOWN\n";
+            bool hasCooldown = false;
+            if (valves != null)
+            {
+                for (int i = 0; i < valves.Length; i++)
+                {
+                    float remaining = GetValveCooldownRemaining(i + 1);
+                    if (remaining <= 0f) continue;
+                    hasCooldown = true;
+                    cooldownText += $"Valve {i + 1}: {remaining:0.0}s\n";
+                }
+            }
+            valveCooldownText.text = hasCooldown ? cooldownText : "VALVE SPIDER COOLDOWN\nREADY";
+        }
+    }
 
 }

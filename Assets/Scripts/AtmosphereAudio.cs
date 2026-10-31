@@ -6,69 +6,151 @@ using UnityEngine;
 /// </summary>
 public class AtmosphereAudio : MonoBehaviour
 {
+    [Header("Volume")]
+    [SerializeField, Range(0f, 1f)] private float reactorHumVolume = 0.35f;
+    [SerializeField, Range(0f, 1f)] private float alarmVolume = 0.18f;
+    [SerializeField, Range(0f, 1f)] private float coolingVolume = 0.28f;
+    [SerializeField, Min(0f)] private float alarmPulseSpeed = 8f;
+
+    [Header("Steam")]
+    [Tooltip("Громкость шума пара на каждой точке выхода.")]
+    [SerializeField, Range(0f, 1f)] private float steamVolume = 0.25f;
+
+    [Header("Audio Sources")]
+    [SerializeField] private AudioSource alarmSource;
+    [SerializeField] private AudioSource coolingSource;
+    [SerializeField] private AudioSource reactorHumSource;
+
+    [Header("3D Sound Positions")]
+    [SerializeField] private Transform alarmPoint;
+    [Tooltip("Все точки, в которых должен быть слышен пар. Можно добавить любое количество точек.")]
+    [SerializeField] private Transform[] steamPoints;
+    [SerializeField] private Transform coolingPoint;
+    [SerializeField] private Transform reactorHumPoint;
+
+    [Header("Generated Audio")]
+    [SerializeField, Min(20f)] private float reactorHumFrequency = 70f;
+    [SerializeField, Min(20f)] private float alarmFrequency = 440f;
+    [SerializeField, Min(0f)] private float generatedToneVolume = 0.22f;
+    [SerializeField, Min(0f)] private float generatedSteamVolume = 0.18f;
+    [SerializeField, Min(0f)] private float alarmMinVolume = 0.05f;
+    [SerializeField, Min(0f)] private float alarmMaxVolume = 0.22f;
+    [SerializeField] private bool addListenerToMainCamera;
+    [SerializeField, Min(0.1f)] private float threeDMinDistance = 2f;
+    [SerializeField, Min(1f)] private float threeDMaxDistance = 25f;
+
     private AudioSource reactorHum;
     private AudioSource alarm;
-    private AudioSource steam;
+    private AudioSource[] steamSources;
     private AudioSource cooling;
 
     private bool alarmEnabled;
+    private bool steamEnabled;
 
     private void Awake()
     {
-        reactorHum = CreateLoopingSource(CreateTone("ReactorHum", 70f, 0.22f));
-        reactorHum.volume = 0.35f;
+        reactorHum = ConfigureSource(reactorHumSource, CreateTone("ReactorHum", reactorHumFrequency, generatedToneVolume), reactorHumPoint);
+        reactorHum.volume = reactorHumVolume;
 
-        alarm = CreateLoopingSource(CreateTone("Alarm", 440f, 0.35f));
+        alarm = ConfigureSource(alarmSource, CreateTone("Alarm", alarmFrequency, generatedToneVolume), alarmPoint);
         alarm.volume = 0f;
 
-        steam = CreateLoopingSource(CreateNoise("SteamHiss", 0.18f));
-        steam.volume = 0f;
+        AudioClip steamClip = CreateNoise("Steam", generatedSteamVolume);
+        steamSources = ConfigureSteamSources(steamClip);
 
-        cooling = CreateLoopingSource(CreateTone("Cooling", 180f, 0.22f));
+        cooling = ConfigureSource(coolingSource, CreateTone("Cooling", reactorHumFrequency + 110f, generatedToneVolume), coolingPoint);
         cooling.volume = 0f;
 
-        if (Camera.main != null && Camera.main.GetComponent<AudioListener>() == null)
+        if (addListenerToMainCamera && Camera.main != null && Camera.main.GetComponent<AudioListener>() == null)
         {
             Camera.main.gameObject.AddComponent<AudioListener>();
         }
     }
 
-    private AudioSource CreateLoopingSource(AudioClip clip)
+    private AudioSource ConfigureSource(AudioSource source, AudioClip clip, Transform point)
     {
-        AudioSource source = gameObject.AddComponent<AudioSource>();
+        if (point != null)
+        {
+            source = point.GetComponent<AudioSource>();
+            if (source == null) source = point.gameObject.AddComponent<AudioSource>();
+        }
+        else if (source == null)
+        {
+            GameObject sourceObject = new GameObject(clip.name + " Source");
+            sourceObject.transform.SetParent(transform, false);
+            source = sourceObject.AddComponent<AudioSource>();
+        }
         source.clip = clip;
         source.loop = true;
         source.playOnAwake = false;
-        source.spatialBlend = 0f;
+        source.spatialBlend = 1f;
+        source.minDistance = threeDMinDistance;
+        source.maxDistance = threeDMaxDistance;
+        source.rolloffMode = AudioRolloffMode.Logarithmic;
         source.Play();
         return source;
+    }
+
+    private AudioSource[] ConfigureSteamSources(AudioClip clip)
+    {
+        if (steamPoints == null || steamPoints.Length == 0)
+        {
+            AudioSource fallbackSource = ConfigureSource(null, clip, null);
+            fallbackSource.volume = 0f;
+            return new[] { fallbackSource };
+        }
+
+        AudioSource[] sources = new AudioSource[steamPoints.Length];
+
+        for (int i = 0; i < steamPoints.Length; i++)
+        {
+            sources[i] = ConfigureSource(null, clip, steamPoints[i]);
+            sources[i].volume = 0f;
+        }
+
+        return sources;
     }
 
     public void SetAlarm(bool enabled)
     {
         alarmEnabled = enabled;
-        alarm.volume = enabled ? 0.18f : 0f;
+        alarm.volume = enabled ? alarmVolume : 0f;
     }
 
     public void SetSteam(bool enabled)
     {
-        steam.volume = enabled ? 0.25f : 0f;
+        steamEnabled = enabled;
+
+        if (steamSources == null) return;
+
+        foreach (AudioSource source in steamSources)
+        {
+            if (source != null) source.volume = enabled ? steamVolume : 0f;
+        }
     }
 
     public void SetCooling(bool enabled)
     {
-        cooling.volume = enabled ? 0.28f : 0f;
+        cooling.volume = enabled ? coolingVolume : 0f;
     }
 
     private void Update()
     {
-        if (!alarmEnabled)
+        if (alarmEnabled)
         {
-            return;
+            float pulse = (Mathf.Sin(Time.time * alarmPulseSpeed) + 1f) * 0.5f;
+            alarm.volume = Mathf.Lerp(alarmMinVolume, alarmMaxVolume, pulse);
         }
 
-        float pulse = (Mathf.Sin(Time.time * 8f) + 1f) * 0.5f;
-        alarm.volume = Mathf.Lerp(0.05f, 0.22f, pulse);
+        if (steamSources != null)
+        {
+            float target = steamEnabled ? steamVolume : 0f;
+
+            foreach (AudioSource source in steamSources)
+            {
+                if (source != null) source.volume = target;
+            }
+        }
     }
 
     private AudioClip CreateTone(string name, float frequency, float volume)
